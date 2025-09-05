@@ -1,0 +1,198 @@
+<!DOCTYPE html><html>
+<head>
+  <title>Tourist Safety App</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css" rel="stylesheet">
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
+  <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=geometry"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    #map { height: 100vh; width: 100%; }
+    .hidden { display: none; }
+    .sidebar { height: 100vh; overflow-y: auto; background: #f8f9fa; padding: 1rem; }
+    .toast-container { position: fixed; top: 1rem; right: 1rem; z-index: 1055; }
+    .status-badge { font-weight: bold; }
+    .sos-btn { font-size: 1.2rem; padding: 0.8rem 1.5rem; border-radius: 0.5rem; }
+  </style>
+</head>
+<body>  <!-- Role Selector -->  <div id="role-selector" class="container text-center mt-5">
+    <h2>Select Role</h2>
+    <button class="btn btn-primary m-3" onclick="loadTouristMode()">Tourist <i class="bi bi-geo-alt-fill"></i></button>
+    <button class="btn btn-success m-3" onclick="loadAuthorityMode()">Authority <i class="bi bi-person-check-fill"></i></button>
+  </div>  <!-- Tourist Dashboard -->  <div id="tourist-dashboard" class="hidden">
+    <div id="map"></div>
+    <button class="btn btn-danger sos-btn position-fixed bottom-0 start-50 translate-middle-x m-3" onclick="sendSOS()">
+      <i class="bi bi-exclamation-triangle-fill"></i> SOS
+    </button>
+    <div id="proximity" class="position-fixed top-0 start-50 translate-middle-x m-3 alert alert-info">Calculating...</div>
+  </div>  <!-- Authority Dashboard -->  <div id="authority-dashboard" class="hidden container-fluid">
+    <div class="row g-0">
+      <div class="col-3 sidebar">
+        <h4>Tourists</h4>
+        <input type="text" id="searchBox" class="form-control mb-2" placeholder="Search...">
+        <select id="statusFilter" class="form-select mb-3">
+          <option value="all">All</option>
+          <option value="safe">Safe</option>
+          <option value="danger">Danger</option>
+        </select>
+        <ul id="touristList" class="list-group"></ul><h4 class="mt-4">Incident Log</h4>
+    <table class="table table-striped table-hover table-sm" id="incidentTable">
+      <thead><tr><th>Tourist</th><th>Type</th><th>Time</th></tr></thead>
+      <tbody></tbody>
+    </table>
+
+    <h4 class="mt-4">QR Verification</h4>
+    <input type="text" id="qrInput" class="form-control mb-2" placeholder="Enter QR / ID">
+    <button class="btn btn-primary w-100 mb-2" onclick="verifyQR()"><i class="bi bi-upc-scan"></i> Verify</button>
+    <div id="qrResult"></div>
+  </div>
+  <div class="col-9 p-0">
+    <div id="map"></div>
+  </div>
+</div>
+
+  </div>  <!-- Toasts -->  <div class="toast-container" id="toastContainer"></div>  <script>
+    const firebaseConfig = { /* your firebase config */ };
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+    let map, userMarker, dangerZones = [], role = null;
+
+    function loadTouristMode() {
+      role = 'tourist';
+      document.getElementById('role-selector').classList.add('hidden');
+      document.getElementById('tourist-dashboard').classList.remove('hidden');
+      initMap();
+      startTouristTracking();
+    }
+
+    function loadAuthorityMode() {
+      role = 'authority';
+      document.getElementById('role-selector').classList.add('hidden');
+      document.getElementById('authority-dashboard').classList.remove('hidden');
+      initMap();
+      loadAuthorityFeatures();
+    }
+
+    function initMap() {
+      map = new google.maps.Map(document.getElementById('map'), { center: { lat: 20.5937, lng: 78.9629 }, zoom: 6 });
+      loadDangerZones();
+    }
+
+    function loadDangerZones() {
+      db.ref('dangerZones').on('value', snapshot => {
+        dangerZones.forEach(z => z.setMap(null));
+        dangerZones = [];
+        snapshot.forEach(zone => {
+          const coords = zone.val().coords.map(c => ({ lat: c.lat, lng: c.lng }));
+          const polygon = new google.maps.Polygon({ paths: coords, strokeColor: '#FF0000', fillColor: '#FF0000', fillOpacity: 0.3 });
+          polygon.setMap(map);
+          dangerZones.push(polygon);
+        });
+      });
+    }
+
+    function startTouristTracking() {
+      if (navigator.geolocation) {
+        navigator.geolocation.watchPosition(pos => {
+          const lat = pos.coords.latitude, lng = pos.coords.longitude;
+          if (!userMarker) {
+            userMarker = new google.maps.Marker({ position: { lat, lng }, map, title: 'You are here', icon: 'http://maps.google.com/mapfiles/ms/icons/blue-dot.png' });
+            map.setCenter({ lat, lng });
+          } else userMarker.setPosition({ lat, lng });
+          db.ref('tourists/tourist1').update({ lat, lng, status: 'safe' });
+          checkProximity(lat, lng);
+        });
+      }
+    }
+
+    function checkProximity(lat, lng) {
+      let nearest = Infinity;
+      dangerZones.forEach(zone => {
+        zone.getPath().forEach(p => {
+          const dist = google.maps.geometry.spherical.computeDistanceBetween(new google.maps.LatLng(lat, lng), p);
+          if (dist < nearest) nearest = dist;
+        });
+      });
+      const proxDiv = document.getElementById('proximity');
+      if (nearest < 500) {
+        proxDiv.textContent = `Danger zone nearby: ${Math.round(nearest)}m`;
+        proxDiv.className = 'alert alert-danger position-fixed top-0 start-50 translate-middle-x m-3';
+        showToast('Warning! You are close to a danger zone.');
+      } else {
+        proxDiv.textContent = `Safe. Nearest danger zone: ${Math.round(nearest)}m`;
+        proxDiv.className = 'alert alert-success position-fixed top-0 start-50 translate-middle-x m-3';
+      }
+    }
+
+    function sendSOS() {
+      db.ref('tourists/tourist1').update({ status: 'danger' });
+      logIncident('tourist1', 'SOS Alert');
+      showToast('SOS sent to authorities!');
+    }
+
+    function loadAuthorityFeatures() {
+      const touristsRef = db.ref('tourists');
+      touristsRef.on('value', snapshot => {
+        const list = document.getElementById('touristList');
+        list.innerHTML = '';
+        snapshot.forEach(t => {
+          const val = t.val();
+          if (filterTourist(val)) {
+            const li = document.createElement('li');
+            li.className = 'list-group-item d-flex justify-content-between align-items-center';
+            li.innerHTML = `${val.name || 'Tourist'} <span class='badge ${val.status==='danger'?'bg-danger':'bg-success'} rounded-pill'>${val.status}</span>`;
+            list.appendChild(li);
+          }
+          if (val.lat && val.lng) {
+            const marker = new google.maps.Marker({ position: { lat: val.lat, lng: val.lng }, map, icon: val.status === 'danger' ? 'http://maps.google.com/mapfiles/ms/icons/red-dot.png' : 'http://maps.google.com/mapfiles/ms/icons/green-dot.png' });
+            marker.addListener('click', () => showTouristDetails(val));
+          }
+        });
+      });
+    }
+
+    function filterTourist(val) {
+      const search = document.getElementById('searchBox').value.toLowerCase();
+      const filter = document.getElementById('statusFilter').value;
+      if (search && !(val.name || '').toLowerCase().includes(search)) return false;
+      if (filter !== 'all' && val.status !== filter) return false;
+      return true;
+    }
+
+    document.getElementById('searchBox').addEventListener('input', loadAuthorityFeatures);
+    document.getElementById('statusFilter').addEventListener('change', loadAuthorityFeatures);
+
+    function showTouristDetails(val) {
+      const modalHtml = `Name: ${val.name || 'N/A'}\nContact: ${val.contact || 'N/A'}\nStatus: ${val.status}\nLocation: ${val.lat}, ${val.lng}`;
+      alert(modalHtml);
+    }
+
+    function logIncident(name, type) {
+      const row = `<tr><td>${name}</td><td>${type}</td><td>${new Date().toLocaleTimeString()}</td></tr>`;
+      document.querySelector('#incidentTable tbody').insertAdjacentHTML('afterbegin', row);
+    }
+
+    function verifyQR() {
+      const id = document.getElementById('qrInput').value;
+      db.ref('tourists/' + id).once('value').then(snap => {
+        if (snap.exists()) {
+          document.getElementById('qrResult').innerHTML = `<div class='alert alert-success mt-2'>Verified: ${snap.val().name || 'Tourist'}</div>`;
+        } else {
+          document.getElementById('qrResult').innerHTML = `<div class='alert alert-danger mt-2'>Not found</div>`;
+        }
+      });
+    }
+
+    function showToast(msg) {
+      const toast = document.createElement('div');
+      toast.className = 'toast align-items-center text-bg-primary border-0 show mb-2';
+      toast.innerHTML = `<div class='d-flex'><div class='toast-body'>${msg}</div><button type='button' class='btn-close btn-close-white me-2 m-auto' data-bs-dismiss='toast'></button></div>`;
+      document.getElementById('toastContainer').appendChild(toast);
+      setTimeout(() => toast.remove(), 4000);
+    }
+  </script></body>
+</html>

@@ -1,6 +1,7 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8">
   <title>Authority Dashboard - Tourist Safety</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -8,186 +9,225 @@
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-app.js"></script>
   <script src="https://www.gstatic.com/firebasejs/8.10.1/firebase-database.js"></script>
   <script src="https://maps.googleapis.com/maps/api/js?key=YOUR_API_KEY&libraries=geometry"></script>
+
   <style>
     body { font-family: Arial, sans-serif; }
     #map { height: 100vh; width: 100%; }
-    .sidebar { height: 100vh; overflow-y: auto; background: #f8f9fa; padding: 1rem; }
+    .sidebar { height: 100vh; overflow-y: auto; background: #f8f9fa; padding: 1rem; border-right: 1px solid #ddd; }
+    .sidebar h4 { position: sticky; top: 0; background: #f8f9fa; padding: 0.5rem 0; z-index: 10; }
     .toast-container { position: fixed; top: 1rem; right: 1rem; z-index: 1055; }
-    .status-badge { font-weight: bold; }
-    .highlight-update { animation: pulse 2s ease; }
-    @keyframes pulse {
-      0% { background-color: #fff3cd; }
-      100% { background-color: transparent; }
-    }
+    .list-group-item.active { background-color: #007bff !important; color: #fff; }
   </style>
 </head>
 <body>
+<div class="container-fluid">
+  <div class="row g-0">
+    <div class="col-3 sidebar">
+      <h3 class="mb-3"><i class="bi bi-shield-lock-fill text-primary"></i> Authority Dashboard</h3>
+      <h4>Tourists</h4>
+      <input type="text" id="searchBox" class="form-control mb-2" placeholder="Search...">
+      <select id="statusFilter" class="form-select mb-3">
+        <option value="all">All</option>
+        <option value="safe">Safe</option>
+        <option value="danger">Danger</option>
+      </select>
+      <ul id="touristList" class="list-group"></ul>
 
-  <!-- Authority Dashboard -->
-  <div id="authority-dashboard" class="container-fluid">
-    <div class="row g-0">
-      <div class="col-3 sidebar">
-        <h4><i class="bi bi-people-fill"></i> Tourists</h4>
-        <input type="text" id="searchBox" class="form-control mb-2" placeholder="Search...">
-        <select id="statusFilter" class="form-select mb-3">
-          <option value="all">All</option>
-          <option value="safe">Safe</option>
-          <option value="danger">Danger</option>
-        </select>
-        <ul id="touristList" class="list-group"></ul>
+      <h4 class="mt-4">Incident Log</h4>
+      <table class="table table-striped table-hover table-sm" id="incidentTable">
+        <thead><tr><th>Tourist</th><th>Type</th><th>When</th></tr></thead>
+        <tbody></tbody>
+      </table>
 
-        <h4 class="mt-4"><i class="bi bi-journal-text"></i> Incident Log</h4>
-        <table class="table table-striped table-hover table-sm" id="incidentTable">
-          <thead><tr><th>Tourist</th><th>Type</th><th>Time</th></tr></thead>
-          <tbody></tbody>
-        </table>
+      <h4 class="mt-4">QR Verification</h4>
+      <input type="text" id="qrInput" class="form-control mb-2" placeholder="Enter QR / ID">
+      <button class="btn btn-primary w-100 mb-2" onclick="verifyQR()">
+        <i class="bi bi-upc-scan"></i> Verify
+      </button>
+      <div id="qrResult"></div>
+    </div>
 
-        <h4 class="mt-4"><i class="bi bi-upc-scan"></i> QR Verification</h4>
-        <input type="text" id="qrInput" class="form-control mb-2" placeholder="Enter QR / ID">
-        <button class="btn btn-primary w-100 mb-2" onclick="verifyQR()"><i class="bi bi-upc-scan"></i> Verify</button>
-        <div id="qrResult"></div>
-      </div>
-      <div class="col-9 p-0">
-        <div id="map"></div>
-      </div>
+    <div class="col-9 p-0">
+      <div id="map"></div>
     </div>
   </div>
+</div>
 
-  <!-- Tourist Details Modal -->
-  <div class="modal fade" id="touristModal" tabindex="-1">
-    <div class="modal-dialog modal-dialog-centered">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h5 class="modal-title"><i class="bi bi-person-badge"></i> Tourist Details</h5>
-          <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-        </div>
-        <div class="modal-body" id="touristDetails"></div>
+<div class="modal fade" id="touristModal" tabindex="-1">
+  <div class="modal-dialog">
+    <div class="modal-content">
+      <div class="modal-header bg-primary text-white">
+        <h5 class="modal-title"><i class="bi bi-person-badge-fill"></i> Tourist Details</h5>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
       </div>
+      <div class="modal-body" id="touristModalBody"></div>
     </div>
   </div>
+</div>
 
-  <!-- Toasts -->
-  <div class="toast-container" id="toastContainer"></div>
+<div class="toast-container" id="toastContainer"></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-  <script>
-    const firebaseConfig = { /* your firebase config */ };
-    firebase.initializeApp(firebaseConfig);
-    const db = firebase.database();
+<script>
+  const firebaseConfig = { /* your firebase config */ };
+  firebase.initializeApp(firebaseConfig);
+  const db = firebase.database();
 
-    let map, markers = {};
+  let map, dangerZones = [], markers = {};
+  const touristsRef = db.ref('tourists');
+  const incidentsRef = db.ref('incidents');
 
-    function initMap() {
-      map = new google.maps.Map(document.getElementById('map'), { center: { lat: 20.5937, lng: 78.9629 }, zoom: 6 });
-      loadDangerZones();
-      loadAuthorityFeatures();
-    }
+  function initMap() {
+    map = new google.maps.Map(document.getElementById('map'), {
+      center: { lat: 20.5937, lng: 78.9629 },
+      zoom: 6
+    });
+    loadDangerZones();
+    loadTourists();
+    loadIncidents();
+  }
 
-    function loadDangerZones() {
-      db.ref('dangerZones').on('value', snapshot => {
-        snapshot.forEach(zone => {
-          const coords = zone.val().coords.map(c => ({ lat: c.lat, lng: c.lng }));
-          new google.maps.Polygon({ paths: coords, strokeColor: '#FF0000', fillColor: '#FF0000', fillOpacity: 0.3, map });
+  function loadDangerZones() {
+    db.ref('dangerZones').on('value', snapshot => {
+      dangerZones.forEach(z => z.setMap(null));
+      dangerZones = [];
+      snapshot.forEach(zone => {
+        const coords = zone.val().coords.map(c => ({ lat: c.lat, lng: c.lng }));
+        const polygon = new google.maps.Polygon({
+          paths: coords,
+          strokeColor: '#FF0000',
+          fillColor: '#FF0000',
+          fillOpacity: 0.3
         });
+        polygon.setMap(map);
+        polygon.addListener('click', () => showToast(`Danger Zone: ${zone.key}`, 'danger'));
+        dangerZones.push(polygon);
       });
-    }
+    });
+  }
 
-    function loadAuthorityFeatures() {
-      db.ref('tourists').on('value', snapshot => {
-        const list = document.getElementById('touristList');
-        list.innerHTML = '';
-        snapshot.forEach(t => {
-          const val = t.val();
-          const id = t.key;
+  function loadTourists() {
+    touristsRef.on('value', snapshot => {
+      const list = document.getElementById('touristList');
+      list.innerHTML = '';
+      Object.values(markers).forEach(m => m.setMap(null));
+      markers = {};
 
-          // Sidebar entry
-          if (filterTourist(val)) {
-            const li = document.createElement('li');
-            li.className = 'list-group-item d-flex justify-content-between align-items-center';
-            li.innerHTML = `${val.name || 'Tourist'} <span class='badge ${val.status==='danger'?'bg-danger':'bg-success'}'>${val.status}</span>`;
-            li.id = `list-${id}`;
-            list.appendChild(li);
-          }
+      snapshot.forEach(t => {
+        const val = t.val();
+        if (!filterTourist(val)) return;
 
-          // Marker handling
-          if (val.lat && val.lng) {
-            if (!markers[id]) {
-              markers[id] = new google.maps.Marker({ position: { lat: val.lat, lng: val.lng }, map, icon: getMarkerIcon(val.status) });
-              markers[id].addListener('click', () => showTouristDetails(id, val));
-            } else {
-              markers[id].setIcon(getMarkerIcon(val.status));
-              markers[id].setPosition({ lat: val.lat, lng: val.lng });
+        const li = document.createElement('li');
+        li.className = 'list-group-item d-flex justify-content-between align-items-center';
+        li.innerHTML = `
+          ${val.name || 'Tourist'} 
+          <span class="badge ${val.status==='danger'?'bg-danger':'bg-success'} rounded-pill">
+            ${val.status==='danger' ? '<i class="bi bi-exclamation-triangle"></i> Danger' : '<i class="bi bi-check-circle"></i> Safe'}
+          </span>`;
+        li.onclick = () => focusTourist(t.key, val, li);
+        list.appendChild(li);
 
-              // Animate marker on update
-              markers[id].setAnimation(google.maps.Animation.BOUNCE);
-              setTimeout(() => markers[id].setAnimation(null), 1400);
-
-              // Highlight list item
-              const li = document.getElementById(`list-${id}`);
-              if (li) {
-                li.classList.add('highlight-update');
-                setTimeout(() => li.classList.remove('highlight-update'), 2000);
-              }
-            }
-          }
-        });
-      });
-    }
-
-    function getMarkerIcon(status) {
-      if (status === 'danger') return 'http://maps.google.com/mapfiles/ms/icons/red-dot.png';
-      if (status === 'sos') return 'http://maps.google.com/mapfiles/ms/icons/yellow-dot.png';
-      return 'http://maps.google.com/mapfiles/ms/icons/green-dot.png';
-    }
-
-    function filterTourist(val) {
-      const search = document.getElementById('searchBox').value.toLowerCase();
-      const filter = document.getElementById('statusFilter').value;
-      if (search && !(val.name || '').toLowerCase().includes(search)) return false;
-      if (filter !== 'all' && val.status !== filter) return false;
-      return true;
-    }
-
-    document.getElementById('searchBox').addEventListener('input', loadAuthorityFeatures);
-    document.getElementById('statusFilter').addEventListener('change', loadAuthorityFeatures);
-
-    function showTouristDetails(id, val) {
-      const html = `
-        <p><strong>Name:</strong> ${val.name || 'N/A'}</p>
-        <p><strong>Contact:</strong> ${val.contact || 'N/A'}</p>
-        <p><strong>Status:</strong> <span class="badge ${val.status==='danger'?'bg-danger':'bg-success'}">${val.status}</span></p>
-        <p><strong>Digital ID:</strong> ${id}</p>
-        <p><strong>Location:</strong> ${val.lat}, ${val.lng}</p>
-        <p><strong>Last Updated:</strong> ${new Date().toLocaleTimeString()}</p>`;
-      document.getElementById('touristDetails').innerHTML = html;
-      new bootstrap.Modal(document.getElementById('touristModal')).show();
-    }
-
-    function logIncident(name, type) {
-      const row = `<tr><td>${name}</td><td>${type}</td><td>${new Date().toLocaleTimeString()}</td></tr>`;
-      document.querySelector('#incidentTable tbody').insertAdjacentHTML('afterbegin', row);
-    }
-
-    function verifyQR() {
-      const id = document.getElementById('qrInput').value;
-      db.ref('tourists/' + id).once('value').then(snap => {
-        if (snap.exists()) {
-          document.getElementById('qrResult').innerHTML = `<div class='alert alert-success mt-2'>Verified: ${snap.val().name || 'Tourist'}</div>`;
-        } else {
-          document.getElementById('qrResult').innerHTML = `<div class='alert alert-danger mt-2'>Not found</div>`;
+        if (val.lat && val.lng) {
+          const marker = new google.maps.Marker({
+            position: { lat: val.lat, lng: val.lng },
+            map,
+            icon: val.status === 'danger'
+              ? 'http://maps.google.com/mapfiles/ms/icons/red-dot.png'
+              : 'http://maps.google.com/mapfiles/ms/icons/green-dot.png'
+          });
+          marker.addListener('click', () => showTouristDetails(val));
+          markers[t.key] = marker;
         }
       });
-    }
+    });
+  }
 
-    function showToast(msg) {
-      const toast = document.createElement('div');
-      toast.className = 'toast align-items-center text-bg-primary border-0 show mb-2';
-      toast.innerHTML = `<div class='d-flex'><div class='toast-body'>${msg}</div><button type='button' class='btn-close btn-close-white me-2 m-auto' data-bs-dismiss='toast'></button></div>`;
-      document.getElementById('toastContainer').appendChild(toast);
-      setTimeout(() => toast.remove(), 4000);
-    }
+  function filterTourist(val) {
+    const search = document.getElementById('searchBox').value.toLowerCase();
+    const filter = document.getElementById('statusFilter').value;
+    if (search && !(val.name || '').toLowerCase().includes(search)) return false;
+    if (filter !== 'all' && val.status !== filter) return false;
+    return true;
+  }
 
-    window.onload = initMap;
-  </script>
+  document.getElementById('searchBox').addEventListener('input', loadTourists);
+  document.getElementById('statusFilter').addEventListener('change', loadTourists);
+
+  function focusTourist(key, val, li) {
+    const marker = markers[key];
+    if (marker) {
+      map.setCenter(marker.getPosition());
+      marker.setAnimation(google.maps.Animation.BOUNCE);
+      setTimeout(() => marker.setAnimation(null), 1500);
+    }
+    document.querySelectorAll('#touristList .list-group-item').forEach(el => el.classList.remove('active'));
+    li.classList.add('active');
+    showTouristDetails(val);
+  }
+
+  function showTouristDetails(val) {
+    document.getElementById('touristModalBody').innerHTML = `
+      <p><b>Name:</b> ${val.name || 'N/A'}</p>
+      <p><b>Contact:</b> ${val.contact || 'N/A'}</p>
+      <p><b>Status:</b> <span class="badge ${val.status==='danger'?'bg-danger':'bg-success'}">${val.status}</span></p>
+      <p><b>Location:</b> ${val.lat}, ${val.lng}</p>`;
+    new bootstrap.Modal(document.getElementById('touristModal')).show();
+  }
+
+  function logIncident(name, type) {
+    const time = Date.now();
+    incidentsRef.push({name, type, time});
+  }
+
+  function loadIncidents() {
+    incidentsRef.on('value', snapshot => {
+      const tbody = document.querySelector('#incidentTable tbody');
+      tbody.innerHTML = '';
+      snapshot.forEach(i => {
+        const val = i.val();
+        const row = `<tr>
+          <td>${val.name}</td>
+          <td>${val.type}</td>
+          <td>${timeAgo(new Date(val.time))}</td>
+        </tr>`;
+        tbody.insertAdjacentHTML('afterbegin', row);
+      });
+    });
+  }
+
+  function verifyQR() {
+    const id = document.getElementById('qrInput').value;
+    db.ref('tourists/' + id).once('value').then(snap => {
+      if (snap.exists()) {
+        document.getElementById('qrResult').innerHTML =
+          `<div class='alert alert-success mt-2'><i class="bi bi-check2-circle"></i> Verified: ${snap.val().name || 'Tourist'}</div>`;
+      } else {
+        document.getElementById('qrResult').innerHTML =
+          `<div class='alert alert-danger mt-2'><i class="bi bi-x-circle"></i> Not found</div>`;
+      }
+    });
+  }
+
+  function showToast(msg, type='primary') {
+    const toast = document.createElement('div');
+    toast.className = `toast align-items-center text-bg-${type} border-0 show mb-2`;
+    toast.innerHTML = `<div class='d-flex'>
+        <div class='toast-body'>${msg}</div>
+        <button type='button' class='btn-close btn-close-white me-2 m-auto' data-bs-dismiss='toast'></button>
+      </div>`;
+    document.getElementById('toastContainer').appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
+  }
+
+  function timeAgo(date) {
+    const diff = Math.floor((new Date() - date) / 1000);
+    if (diff < 60) return diff + "s ago";
+    if (diff < 3600) return Math.floor(diff/60) + "m ago";
+    if (diff < 86400) return Math.floor(diff/3600) + "h ago";
+    return Math.floor(diff/86400) + "d ago";
+  }
+
+  window.onload = initMap;
+</script>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
